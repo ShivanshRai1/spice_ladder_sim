@@ -294,7 +294,7 @@ def schematic():
         return _error(f"Internal server error: {exc}", 500)
 
 
-@app.route("/api/health")
+@app.route("/api/health", methods=["GET", "HEAD"])
 def health():
     return jsonify({"status": "ok", "message": "Thermal ladder API is running."})
 
@@ -302,8 +302,8 @@ def health():
 _FRONTEND_DIR = _PROJECT_ROOT / "frontend"
 
 
-@app.route("/", defaults={"path": "index.html"})
-@app.route("/<path:path>")
+@app.route("/", defaults={"path": "index.html"}, methods=["GET", "HEAD"])
+@app.route("/<path:path>", methods=["GET", "HEAD"])
 def serve_frontend(path):
     """Serve the static frontend SPA."""
     return send_from_directory(_FRONTEND_DIR, path)
