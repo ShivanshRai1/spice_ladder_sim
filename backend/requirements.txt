@@ -1,5 +1,6 @@
 flask>=2.3
 numpy>=1.24
 schemdraw>=0.19
+gunicorn>=21.2
 # Optional for plotting/debugging in backend examples:
 # matplotlib>=3.7

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 from thermal_ladder import simulate_cauer, simulate_foster, validate_inputs
 
@@ -294,9 +294,19 @@ def schematic():
         return _error(f"Internal server error: {exc}", 500)
 
 
-@app.route("/")
+@app.route("/api/health")
 def health():
     return jsonify({"status": "ok", "message": "Thermal ladder API is running."})
+
+
+_FRONTEND_DIR = _PROJECT_ROOT / "frontend"
+
+
+@app.route("/", defaults={"path": "index.html"})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    """Serve the static frontend SPA."""
+    return send_from_directory(_FRONTEND_DIR, path)
 
 
 if __name__ == "__main__":

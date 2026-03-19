@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:5000";
+const API_BASE = typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "";
 const SIM_API_URL = `${API_BASE}/api/simulate`;
 const SCHEMATIC_API_URL = `${API_BASE}/api/schematic`;
 
