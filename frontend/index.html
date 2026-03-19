@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thermal Ladder Simulator</title>
+  <link rel="stylesheet" href="styles.css?v=20260306-2" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="app.js?v=20260306-2" defer></script>
+</head>
+<body>
+  <main class="app-shell">
+    <h1>Thermal RC Ladder Simulator</h1>
+
+    <section class="grid">
+      <div class="panel controls">
+        <h2>Inputs</h2>
+
+        <h3>1) Model Setup</h3>
+        <div class="row row-3">
+          <label>
+            Model
+            <select id="modelSelect">
+              <option value="foster">Foster</option>
+              <option value="cauer">Cauer</option>
+            </select>
+          </label>
+
+          <label>
+            Order N
+            <input id="orderInput" type="number" min="1" step="1" value="4" />
+          </label>
+
+          <label>
+            Method
+            <select id="methodSelect"></select>
+          </label>
+        </div>
+        <div id="methodHelpAll" class="hint small"></div>
+
+        <h3>2) RC Parameters</h3>
+        <div class="paste-grid">
+          <label>
+            Quick paste Rth
+            <textarea id="rthPaste" rows="2" placeholder="e.g. 0.2, 0.3, 0.1, 0.4"></textarea>
+          </label>
+          <label>
+            Quick paste Cth
+            <textarea id="cthPaste" rows="2" placeholder="e.g. 5, 10, 2, 20"></textarea>
+          </label>
+        </div>
+        <div class="row">
+          <button id="applyPasteBtn" type="button">Apply Paste</button>
+        </div>
+
+        <div class="table-wrap">
+          <table id="paramTable">
+            <thead>
+              <tr>
+                <th>i</th>
+                <th>Rth (degC/W)</th>
+                <th>Cth (J/C)</th>
+                <th>tau (s)</th>
+                <th id="labelColHeader">Ladel (optional)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>3) Power Profile Setup</h3>
+        <div class="generator-grid">
+          <fieldset>
+            <legend>Pulse Generator</legend>
+            <label>Period (s) <input id="pulsePeriod" type="number" step="any" value="0.2" /></label>
+            <label>Power peak (W) <input id="pulsePower" type="number" step="any" value="100" /></label>
+            <label>On-duration (s) <input id="pulseOnDuration" type="number" step="any" value="0.1" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Step Generator</legend>
+            <label>P (W) <input id="stepPower" type="number" step="any" value="50" /></label>
+          </fieldset>
+        </div>
+        <div class="hint small">After generating, review/edit the t,p table in the right panel before running.</div>
+
+        <h3>4) Simulation Settings</h3>
+        <div class="row row-3">
+          <label>
+            Time step dt (s)
+            <input id="profileDt" type="number" step="any" value="0.001" title="The time step should be less than or equal to minimum tau." />
+          </label>
+          <label>
+            Total simulation time (s)
+            <input id="simTimeInput" type="number" step="any" value="2.0" />
+          </label>
+          <label>
+            Ambient (optional, °C)
+            <input id="ambientInput" type="number" step="any" value="0" />
+          </label>
+        </div>
+        <div id="dtTauHint" class="hint small section-hint"></div>
+
+        <h3>5) Generate + Run</h3>
+        <div class="row">
+          <button id="genPulseBtn" type="button">Generate Pulse</button>
+          <button id="genStepBtn" type="button">Generate Step</button>
+          <button id="runBtn" type="button">Run Simulation</button>
+          <div id="runSpinner" class="spinner hidden" aria-label="running"></div>
+        </div>
+
+        <h3>Results Summary</h3>
+        <div class="stats">
+          <div><strong>DC Rth:</strong> <span id="dcRthStat">-</span> K/W</div>
+          <div><strong>Average Power:</strong> <span id="avgPowerStat">-</span> W</div>
+          <div><strong>Steady-State temp:</strong> <span id="steadyStateTempStat">-</span> °C</div>
+          <div><strong>Points generated:</strong> <span id="pointsGeneratedStat">-</span></div>
+          <div><strong>Maximum temp:</strong> <span id="maxTempStat">-</span> °C</div>
+          <div><strong>Maximum temp rise:</strong> <span id="maxRiseStat">-</span> °C</div>
+        </div>
+
+        <div id="validationHint" class="hint section-hint"></div>
+        <div id="errorPanel" class="error-panel"></div>
+      </div>
+
+      <div class="panel outputs">
+        <h2>Schematic</h2>
+        <div class="schematic-wrap">
+          <div id="schematic" aria-live="polite"></div>
+        </div>
+
+        <h2>Results</h2>
+        <h2>Power points table</h2>
+        <div class="row">
+          <button id="addProfileRowBtn" type="button">Add Profile Row</button>
+          <button id="sortProfileBtn" type="button">Sort By Time</button>
+          <button id="uploadProfileCsvBtn" type="button">Upload CSV</button>
+          <input id="uploadProfileCsvInput" type="file" accept=".csv,text/csv" class="hidden-input" />
+        </div>
+        <div id="profileUploadHint" class="hint small section-hint"></div>
+        <div class="table-wrap profile-wrap">
+          <table id="profileTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>t (s)</th>
+                <th>P (W)</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="profileTableHint" class="hint small section-hint"></div>
+
+        <h2>Temperature vs Time</h2>
+        <div class="row">
+          <label class="inline-check">
+            <input id="overlayPowerToggle" type="checkbox" />
+            Overlay power on plot
+          </label>
+          <button id="exportCsvBtn" type="button">Export CSV</button>
+        </div>
+        <div class="plot-wrap">
+          <canvas id="resultChart"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

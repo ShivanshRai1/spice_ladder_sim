@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thermal RC Network Diagram</title>
+  <style>
+    :root {
+      --bg: #f6f3ef;
+      --ink: #1b1b1b;
+      --panel: #ffffff;
+      --accent: #2f5d62;
+      --border: #d9d2c7;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(120deg, #f6f3ef 0%, #efe9e1 40%, #f7f5f2 100%);
+    }
+    .wrap {
+      padding: 24px;
+      max-width: 980px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 12px;
+      letter-spacing: 0.2px;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    label {
+      font-size: 14px;
+    }
+    select, input[type="number"] {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      background: var(--panel);
+    }
+    .panel {
+      width: 600px;
+      height: 400px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .panel img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .note {
+      font-size: 12px;
+      color: #5a544d;
+      margin-top: 8px;
+    }
+    @media (max-width: 700px) {
+      .panel {
+        width: 100%;
+        height: 320px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    {% if not embedded %}
+    <h1>Thermal RC Network Builder</h1>
+    <div class="controls">
+      <label>
+        Network
+        <select id="networkType">
+          <option value="foster">Foster</option>
+          <option value="cauer">Cauer</option>
+        </select>
+      </label>
+      <label>
+        Order
+        <input id="order" type="number" min="1" max="50" value="3" />
+      </label>
+      <label>
+        Labels
+        <select id="labels">
+          <option value="off">Off</option>
+          <option value="on">On</option>
+        </select>
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <img id="diagram" alt="RC diagram" />
+    </div>
+    {% if not embedded %}
+    <div class="note">Use query params: ?type=foster&order=4&labels=on</div>
+    {% endif %}
+  </div>
+
+  <script>
+    const diagram = document.getElementById('diagram');
+    const typeSel = document.getElementById('networkType');
+    const orderInput = document.getElementById('order');
+    const labelsSel = document.getElementById('labels');
+
+    function getParams() {
+      const params = new URLSearchParams(window.location.search);
+      const type = params.get('type') || 'foster';
+      const order = params.get('order') || '3';
+      const labels = params.get('labels') || 'off';
+      return { type, order, labels };
+    }
+
+    function updateControls({ type, order, labels }) {
+      if (typeSel) typeSel.value = type;
+      if (orderInput) orderInput.value = order;
+      if (labelsSel) labelsSel.value = labels;
+    }
+
+    function updateDiagram() {
+      const type = typeSel ? typeSel.value : (new URLSearchParams(window.location.search).get('type') || 'foster');
+      const order = orderInput ? orderInput.value : (new URLSearchParams(window.location.search).get('order') || '3');
+      const labels = labelsSel ? labelsSel.value : (new URLSearchParams(window.location.search).get('labels') || 'off');
+
+      const params = new URLSearchParams({ type, order, labels });
+      diagram.src = `/diagram?${params.toString()}`;
+
+      if (typeSel) {
+        const url = new URL(window.location);
+        url.search = params.toString();
+        window.history.replaceState({}, '', url);
+      }
+    }
+
+    const initial = getParams();
+    updateControls(initial);
+    updateDiagram();
+
+    if (typeSel) typeSel.addEventListener('change', updateDiagram);
+    if (orderInput) orderInput.addEventListener('input', updateDiagram);
+    if (labelsSel) labelsSel.addEventListener('change', updateDiagram);
+  </script>
+</body>
+</html>
