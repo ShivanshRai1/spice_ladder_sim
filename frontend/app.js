@@ -517,9 +517,18 @@ function exportCsv() {
 
     const headers = ["time_s", "power_W"];
     for (let i = 0; i < nodes.length; i += 1) {
+      const branchNumber = i + 1;
       const custom = (state.branchLabels[i] || "").trim();
-      headers.push(custom ? `temp_branch_${i}_${custom}_C` : `temp_branch_${i}_C`);
-      headers.push(custom ? `temp_rise_branch_${i}_${custom}_C` : `temp_rise_branch_${i}_C`);
+      headers.push(
+        custom
+          ? `temp_branch_${branchNumber}_${custom}_C`
+          : `temp_branch_${branchNumber}_C`
+      );
+      headers.push(
+        custom
+          ? `temp_rise_branch_${branchNumber}_${custom}_C`
+          : `temp_rise_branch_${branchNumber}_C`
+      );
     }
     lines.push(headers.map(escapeCsv).join(","));
 
@@ -676,8 +685,9 @@ function renderPlots(result) {
   const labels = result.model === "foster"
     ? ["node 0 / junction"]
     : tempSeriesList.map((_, i) => {
+      const branchNumber = i + 1;
       const custom = (state.branchLabels[i] || "").trim();
-      return custom ? `branch ${i} (${custom})` : `branch ${i}`;
+      return custom ? `branch ${branchNumber} (${custom})` : `branch ${branchNumber}`;
     });
 
   const sampled = preparePlotData(t, tempSeriesList, state.profile.p);
