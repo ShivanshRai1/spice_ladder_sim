@@ -270,6 +270,39 @@ td.readonly {
   display: none;
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #bdb7ad;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: #fff;
+  text-decoration: none;
+  font: inherit;
+}
+
+.button-link:hover {
+  border-color: var(--accent);
+}
+
+.graph-capture-preview {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.graph-capture-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

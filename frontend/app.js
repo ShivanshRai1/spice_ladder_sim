@@ -1,6 +1,8 @@
 const API_BASE = typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "";
 const SIM_API_URL = `${API_BASE}/api/simulate`;
 const SCHEMATIC_API_URL = `${API_BASE}/api/schematic`;
+const IMPORT_GRAPH_API_URL = `${API_BASE}/api/import_captured_graph`;
+const GRAPH_CAPTURE_BASE_URL = "https://graph-capture.netlify.app/";
 
 const DEFAULT_R = 0.1;
 const DEFAULT_C = 1.0;
@@ -29,6 +31,7 @@ const state = {
   profileOnDuration: NaN,
   result: null,
   lastRunProfile: null,
+  importedGraph: null,
 };
 
 const el = {};
@@ -89,10 +92,213 @@ function initElements() {
   el.pointsGeneratedStat = byId("pointsGeneratedStat");
   el.maxTempStat = byId("maxTempStat");
   el.maxRiseStat = byId("maxRiseStat");
+
+  // Optional Graph Capture return flow (additive; unused when no return_graph_id).
+  el.openGraphCaptureLink = byId("openGraphCaptureLink");
+  el.importCapturedGraphBtn = byId("importCapturedGraphBtn");
+  el.graphCaptureStatus = byId("graphCaptureStatus");
+  el.graphCapturePreviewWrap = byId("graphCapturePreviewWrap");
+  el.graphCapturePreview = byId("graphCapturePreview");
 }
 
 function setError(message) {
   el.errorPanel.textContent = message || "";
+}
+
+function setGraphCaptureStatus(message, isError = false) {
+  if (!el.graphCaptureStatus) return;
+  el.graphCaptureStatus.textContent = message || "";
+  el.graphCaptureStatus.style.color = isError ? "#9f2d2d" : "#28675f";
+}
+
+function getReturnGraphIdFromUrl() {
+  try {
+    return String(new URLSearchParams(window.location.search).get("return_graph_id") || "").trim();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function getImportGraphIdCandidate() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return String(params.get("return_graph_id") || params.get("graph_id") || "").trim();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function buildCleanReturnUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("return_graph_id");
+  while (url.searchParams.has("return_graph_id")) {
+    url.searchParams.delete("return_graph_id");
+  }
+  return url.toString();
+}
+
+function updateOpenGraphCaptureLink() {
+  if (!el.openGraphCaptureLink) return;
+  const captureUrl = new URL(GRAPH_CAPTURE_BASE_URL);
+  captureUrl.searchParams.set("graph_title", "rth_cth");
+  captureUrl.searchParams.set("partno", "na");
+  captureUrl.searchParams.set("manf", "na");
+  captureUrl.searchParams.set("discoveree_cat_id", "0");
+  captureUrl.searchParams.set("return_url", buildCleanReturnUrl());
+  el.openGraphCaptureLink.href = captureUrl.toString();
+}
+
+function probeImageUrl(url, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve(false);
+      return;
+    }
+    const img = new Image();
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      img.onload = null;
+      img.onerror = null;
+      resolve(ok);
+    };
+    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      finish(true);
+    };
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      finish(false);
+    };
+    img.referrerPolicy = "no-referrer";
+    img.src = url;
+  });
+}
+
+async function resolveReachableImageUrl(candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  for (const candidate of list) {
+    const value = String(candidate || "").trim();
+    if (!value) continue;
+    if (value.toLowerCase().startsWith("data:image/") || value.toLowerCase().startsWith("blob:")) {
+      return value;
+    }
+    // Probe candidates one-by-one; first reachable image wins.
+    const ok = await probeImageUrl(value);
+    if (ok) return value;
+  }
+  return "";
+}
+
+async function applyImportedRcValues(payload) {
+  const rVals = (payload.Rth || []).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  const cVals = (payload.Cth || []).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  if (!rVals.length || rVals.length !== cVals.length) {
+    throw new Error("Imported Rth/Cth arrays are missing or mismatched.");
+  }
+  if (rVals.some((v) => v <= 0) || cVals.some((v) => v <= 0)) {
+    throw new Error("Imported Rth/Cth must be strictly positive.");
+  }
+
+  state.N = rVals.length;
+  state.Rth = rVals;
+  state.Cth = cVals;
+  state.branchLabels = Array.from({ length: state.N }, (_, i) => state.branchLabels[i] || "");
+  el.orderInput.value = String(state.N);
+  if (el.rthPaste) el.rthPaste.value = rVals.join(", ");
+  if (el.cthPaste) el.cthPaste.value = cVals.join(", ");
+
+  const timestep = Number(payload.timestep);
+  if (Number.isFinite(timestep) && timestep > 0) {
+    state.profileDt = timestep;
+    el.profileDt.value = String(timestep);
+  }
+
+  const xs = (payload.points || []).map((p) => Number(p.x)).filter((v) => Number.isFinite(v) && v > 0);
+  if (xs.length) {
+    const suggestedTotal = Math.max(...xs) * 1.25;
+    if (Number.isFinite(suggestedTotal) && suggestedTotal > state.simTotalTime) {
+      state.simTotalTime = Number(suggestedTotal.toFixed(6));
+      el.simTimeInput.value = String(state.simTotalTime);
+    }
+  }
+
+  renderParamTable();
+  await renderSchematic();
+  updateRunState();
+}
+
+async function importCapturedGraph({ auto = false } = {}) {
+  const graphId = getImportGraphIdCandidate();
+  if (!graphId) {
+    const msg = "No return_graph_id (or graph_id) found in the page URL.";
+    setGraphCaptureStatus(msg, true);
+    if (!auto) setError(msg);
+    return;
+  }
+  if (!/^\d+$/.test(graphId)) {
+    const msg = `Invalid graph id: ${graphId}`;
+    setGraphCaptureStatus(msg, true);
+    if (!auto) setError(msg);
+    return;
+  }
+
+  if (el.importCapturedGraphBtn) el.importCapturedGraphBtn.disabled = true;
+  setGraphCaptureStatus(`Importing graph_id=${graphId}...`);
+  if (!auto) setError("");
+
+  try {
+    const res = await fetch(`${IMPORT_GRAPH_API_URL}?graph_id=${encodeURIComponent(graphId)}`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(body.error || `Import failed (${res.status})`);
+    }
+
+    state.importedGraph = body;
+    await applyImportedRcValues(body);
+
+    const imageUrl = await resolveReachableImageUrl(body.image_candidates || []);
+    if (el.graphCapturePreviewWrap && el.graphCapturePreview) {
+      if (imageUrl) {
+        el.graphCapturePreview.src = imageUrl;
+        el.graphCapturePreviewWrap.classList.remove("hidden");
+      } else {
+        el.graphCapturePreview.removeAttribute("src");
+        el.graphCapturePreviewWrap.classList.add("hidden");
+      }
+    }
+
+    const imageNote = imageUrl
+      ? "Graph image preview loaded."
+      : "Rth/Cth imported; graph image URL was unreachable (filename handled correctly, not as base64).";
+    const rms = Number(body.fit_residual_rms);
+    const fitNote = Number.isFinite(rms)
+      ? ` Fit RMS=${rms.toPrecision(3)}.`
+      : "";
+    setGraphCaptureStatus(
+      `Imported graph_id=${body.graph_id || graphId} (N=${body.N}). ${imageNote}${fitNote}`
+    );
+
+    // Drop return_graph_id after a successful import so refresh does not surprise-overwrite edits.
+    try {
+      const clean = new URL(window.location.href);
+      if (clean.searchParams.has("return_graph_id")) {
+        clean.searchParams.delete("return_graph_id");
+        window.history.replaceState({}, "", clean.toString());
+        updateOpenGraphCaptureLink();
+      }
+    } catch (_err) {
+      // ignore history failures
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    setGraphCaptureStatus(message, true);
+    if (!auto) setError(message);
+  } finally {
+    if (el.importCapturedGraphBtn) el.importCapturedGraphBtn.disabled = false;
+  }
 }
 
 function setValidation(message, ok) {
@@ -1152,6 +1358,14 @@ function bindEvents() {
   });
 
   el.runBtn.addEventListener("click", runSimulation);
+
+  if (el.importCapturedGraphBtn) {
+    el.importCapturedGraphBtn.addEventListener("click", () => {
+      importCapturedGraph({ auto: false }).catch((err) => {
+        setError(err.message || String(err));
+      });
+    });
+  }
 }
 
 function setDefaultProfile() {
@@ -1179,6 +1393,13 @@ async function bootstrap() {
   await renderSchematic();
   updateRunState();
   bindEvents();
+  updateOpenGraphCaptureLink();
+
+  // Auto-import only when Graph Capture redirected back with return_graph_id.
+  // Leaves the default Rth/Cth untouched for normal simulator visits.
+  if (getReturnGraphIdFromUrl()) {
+    await importCapturedGraph({ auto: true });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {

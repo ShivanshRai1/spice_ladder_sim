@@ -6,19 +6,28 @@ Run:
 API:
 - POST /api/simulate
 - POST /api/schematic
+- GET  /api/import_captured_graph?graph_id=...
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import numpy as np
 from flask import Flask, jsonify, request, send_from_directory
 
 from thermal_ladder import simulate_cauer, simulate_foster, validate_inputs
+
+DISCOVEREE_GRAPH_CAPTURE_API = "https://www.discoveree.io/graph_capture_api.php"
+_XY_PAIR_RE = re.compile(r"\{x:([^,]+),y:([^}]+)\}")
 
 app = Flask(__name__)
 
@@ -297,6 +306,298 @@ def schematic():
 @app.route("/api/health", methods=["GET", "HEAD"])
 def health():
     return jsonify({"status": "ok", "message": "Thermal ladder API is running."})
+
+
+def _parse_xy_points(xy_raw: Any) -> list[dict[str, float]]:
+    """Parse DiscoverEE `{x:...,y:...},{x:...,y:...}` strings into point dicts."""
+    text = str(xy_raw or "").strip()
+    if not text:
+        return []
+    points: list[dict[str, float]] = []
+    for x_raw, y_raw in _XY_PAIR_RE.findall(text):
+        try:
+            x_val = float(x_raw)
+            y_val = float(y_raw)
+        except ValueError:
+            continue
+        if not (np.isfinite(x_val) and np.isfinite(y_val)):
+            continue
+        points.append({"x": float(x_val), "y": float(y_val)})
+    return points
+
+
+def _is_embedded_or_url_image(value: str) -> bool:
+    lowered = value.strip().lower()
+    return (
+        lowered.startswith("data:image/")
+        or lowered.startswith("blob:")
+        or lowered.startswith("http://")
+        or lowered.startswith("https://")
+    )
+
+
+def _build_graph_image_candidates(graph_img: Any) -> list[str]:
+    """Build image URL candidates. Never treat a bare filename as base64."""
+    value = str(graph_img or "").strip()
+    if not value:
+        return []
+    rejected = {"0", "null", "undefined", "nan", "none"}
+    if value.lower() in rejected:
+        return []
+    if _is_embedded_or_url_image(value):
+        return [value]
+    # Long base64 payloads (rare) — only if clearly not a filename.
+    compact = re.sub(r"\s+", "", value)
+    if (
+        len(compact) > 200
+        and re.fullmatch(r"[A-Za-z0-9+/=]+", compact)
+        and "." not in value
+    ):
+        return [f"data:image/png;base64,{compact}"]
+
+    candidates: list[str] = []
+    name = value.lstrip("/")
+    for host in (
+        "https://www.discoveree.io",
+        "https://www.fet.discoveree.io",
+    ):
+        candidates.append(f"{host}/{name}")
+    if name.startswith("0") and len(name) > 1:
+        stripped = name[1:]
+        for host in (
+            "https://www.discoveree.io",
+            "https://www.fet.discoveree.io",
+        ):
+            candidates.append(f"{host}/{stripped}")
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in candidates:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def _fit_foster_from_zth(
+    t_raw: list[float], z_raw: list[float], n: int
+) -> tuple[list[float], list[float], list[float]]:
+    """Fit Foster R/C from Zth(t) ≈ sum Ri*(1-exp(-t/tau_i)), Ci=tau_i/Ri."""
+    if n < 1:
+        raise ValueError("Branch count N must be >= 1.")
+
+    t = np.asarray(t_raw, dtype=float)
+    z = np.asarray(z_raw, dtype=float)
+    mask = np.isfinite(t) & np.isfinite(z) & (t > 0.0) & (z >= 0.0)
+    t = t[mask]
+    z = z[mask]
+    if t.size < max(3, n):
+        raise ValueError(
+            f"Need at least {max(3, n)} valid curve points to fit N={n}."
+        )
+
+    order = np.argsort(t)
+    t = t[order]
+    z = z[order]
+    # Collapse duplicate times (keep last)
+    uniq_t: list[float] = []
+    uniq_z: list[float] = []
+    for ti, zi in zip(t.tolist(), z.tolist()):
+        if uniq_t and abs(ti - uniq_t[-1]) <= 1e-15 * max(1.0, abs(ti)):
+            uniq_z[-1] = zi
+        else:
+            uniq_t.append(ti)
+            uniq_z.append(zi)
+    t = np.asarray(uniq_t, dtype=float)
+    z = np.asarray(uniq_z, dtype=float)
+    if t.size < max(3, n):
+        raise ValueError("Not enough unique time points for Foster fit.")
+
+    # Digitized Zth curves can be non-monotone; enforce physical non-decrease.
+    z = np.maximum.accumulate(np.maximum(z, 0.0))
+    z_inf = float(max(z[-1], 1e-12))
+
+    t_min = float(max(t[0], 1e-12))
+    t_max = float(t[-1])
+    if not (t_max > t_min):
+        raise ValueError("Invalid time span for Foster fit.")
+
+    # Interior log-spaced taus (avoid extreme ends of the window).
+    tau_lo = t_min * 1.05
+    tau_hi = t_max * 0.95
+    if not (tau_hi > tau_lo):
+        tau_lo, tau_hi = t_min, t_max
+    taus = np.logspace(np.log10(tau_lo), np.log10(tau_hi), n)
+    design = 1.0 - np.exp(-np.outer(t, 1.0 / taus))
+
+    # Multiplicative non-negative LS (no scipy dependency).
+    r = np.full(n, z_inf / float(n), dtype=float)
+    for _ in range(250):
+        pred = design @ r
+        numer = design.T @ z
+        denom = design.T @ pred + 1e-12
+        r *= numer / denom
+        r = np.maximum(r, 1e-12)
+
+    # Keep every branch usable for the simulator (avoid near-zero R / huge C).
+    r_floor = z_inf / float(max(n * 40.0, 40.0))
+    r = np.maximum(r, r_floor)
+
+    # Scale so DC resistance matches final Zth.
+    r_sum = float(np.sum(r))
+    if r_sum > 0:
+        r *= z_inf / r_sum
+        r = np.maximum(r, 1e-12)
+
+    c = np.maximum(taus / r, 1e-12)
+    sort_idx = np.argsort(taus)
+    return (
+        r[sort_idx].tolist(),
+        c[sort_idx].tolist(),
+        taus[sort_idx].tolist(),
+    )
+
+
+def _fetch_discoveree_graph(graph_id: str) -> dict[str, Any]:
+    query = urlencode({"graph_id": graph_id})
+    url = f"{DISCOVEREE_GRAPH_CAPTURE_API}?{query}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "spice-ladder-sim/1.0",
+            "Accept": "application/json,text/plain,*/*",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(
+            f"DiscoverEE graph API HTTP {exc.code}: {body[:240]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"DiscoverEE graph API unreachable: {exc.reason}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("DiscoverEE graph API did not return JSON.") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("DiscoverEE graph API returned an unexpected payload.")
+    if str(payload.get("status", "")).lower() not in {"success", "ok", "1"}:
+        message = payload.get("message") or payload.get("error") or "unknown error"
+        raise RuntimeError(f"DiscoverEE graph API error: {message}")
+    return payload
+
+
+@app.route("/api/import_captured_graph", methods=["GET", "OPTIONS"])
+def import_captured_graph():
+    """Proxy DiscoverEE graph_id fetch + Foster R/C fit for RC Ladder return flow.
+
+    Fixes the common host-side bug of treating graph_img filenames as base64.
+    Does not alter /api/simulate or /api/schematic behavior.
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    graph_id = str(request.args.get("graph_id") or "").strip()
+    if not graph_id or not graph_id.isdigit():
+        return _error("graph_id must be a positive integer.", 400)
+
+    try:
+        payload = _fetch_discoveree_graph(graph_id)
+        graph = payload.get("graph") if isinstance(payload.get("graph"), dict) else {}
+        details = payload.get("details") if isinstance(payload.get("details"), list) else []
+        if not details:
+            return _error(f"No curve details found for graph_id={graph_id}.", 404)
+
+        # Prefer R_th_C_th / rth_cth curves when present.
+        preferred = None
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            title = str(detail.get("curve_title") or "").strip().lower()
+            if "rth" in title or "r_th" in title or "cth" in title or "c_th" in title:
+                preferred = detail
+                break
+        detail = preferred or next(
+            (d for d in details if isinstance(d, dict)),
+            None,
+        )
+        if detail is None:
+            return _error(f"No usable curve detail for graph_id={graph_id}.", 404)
+
+        points = _parse_xy_points(detail.get("xy"))
+        if len(points) < 3:
+            return _error(
+                f"Curve for graph_id={graph_id} has too few xy points to import.",
+                400,
+            )
+
+        branch_raw = detail.get("df_noofbranches")
+        try:
+            n = int(float(branch_raw)) if branch_raw not in (None, "") else 4
+        except (TypeError, ValueError):
+            n = 4
+        n = max(1, min(n, 50))
+
+        dt_raw = detail.get("df_timestep")
+        try:
+            timestep = float(dt_raw) if dt_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            timestep = None
+        if timestep is not None and not (np.isfinite(timestep) and timestep > 0):
+            timestep = None
+
+        t_vals = [p["x"] for p in points]
+        z_vals = [p["y"] for p in points]
+        rth, cth, taus = _fit_foster_from_zth(t_vals, z_vals, n)
+
+        # Report simple fit residual for transparency (does not block import).
+        t_arr = np.asarray(t_vals, dtype=float)
+        z_arr = np.asarray(z_vals, dtype=float)
+        order = np.argsort(t_arr)
+        t_arr = t_arr[order]
+        z_arr = np.maximum.accumulate(np.maximum(z_arr[order], 0.0))
+        design = 1.0 - np.exp(
+            -np.outer(t_arr, 1.0 / np.asarray(taus, dtype=float))
+        )
+        pred = design @ np.asarray(rth, dtype=float)
+        residual_rms = float(np.sqrt(np.mean((pred - z_arr) ** 2))) if z_arr.size else None
+
+        image_candidates = _build_graph_image_candidates(graph.get("graph_img"))
+
+        return jsonify(
+            {
+                "status": "success",
+                "graph_id": str(graph.get("graph_id") or graph_id),
+                "graph_title": graph.get("graph_title"),
+                "curve_title": detail.get("curve_title"),
+                "graph_img": graph.get("graph_img"),
+                "image_candidates": image_candidates,
+                "points": points,
+                "N": n,
+                "Rth": rth,
+                "Cth": cth,
+                "tau": taus,
+                "timestep": timestep,
+                "fit_residual_rms": residual_rms,
+                "notes": [
+                    "graph_img is treated as a filename/URL candidate list, never as raw base64.",
+                    "Rth/Cth come from a Foster multi-exponential fit of the captured Zth(t) curve.",
+                ],
+            }
+        )
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    except RuntimeError as exc:
+        return _error(str(exc), 502)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("Unexpected import_captured_graph error")
+        return _error(f"Internal server error: {exc}", 500)
 
 
 _FRONTEND_DIR = _PROJECT_ROOT / "frontend"
