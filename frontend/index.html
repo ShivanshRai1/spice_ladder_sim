@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Thermal Ladder Simulator</title>
-  <link rel="stylesheet" href="styles.css?v=20260711-1" />
+  <link rel="stylesheet" href="styles.css?v=20260714-1" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="app.js?v=20260711-1" defer></script>
+  <script src="app.js?v=20260714-1" defer></script>
 </head>
 <body>
   <main class="app-shell">
@@ -122,20 +122,23 @@
         <div id="validationHint" class="hint section-hint"></div>
         <div id="errorPanel" class="error-panel"></div>
 
-        <h3>Graph Capture Import (optional)</h3>
-        <div class="hint small">
-          Capture a thermal Zth curve in Graph Capture, then return here with
-          <code>return_graph_id</code>. Existing simulator controls above are unchanged.
-        </div>
-        <div class="row">
-          <a id="openGraphCaptureLink" class="button-link" href="#" target="_blank" rel="noopener noreferrer">
-            Open Graph Capture
-          </a>
-          <button id="importCapturedGraphBtn" type="button">Import from return_graph_id</button>
-        </div>
-        <div id="graphCaptureStatus" class="hint small section-hint"></div>
-        <div id="graphCapturePreviewWrap" class="graph-capture-preview hidden">
-          <img id="graphCapturePreview" alt="Imported graph preview" />
+        <!-- Graph Capture return UI hidden for now (auto-import on return_graph_id still runs). -->
+        <div id="graphCaptureImportPanel" class="hidden" aria-hidden="true">
+          <h3>Graph Capture Import (optional)</h3>
+          <div class="hint small">
+            Capture a thermal Zth curve in Graph Capture, then return here with
+            <code>return_graph_id</code>. Existing simulator controls above are unchanged.
+          </div>
+          <div class="row">
+            <a id="openGraphCaptureLink" class="button-link" href="#" target="_blank" rel="noopener noreferrer">
+              Open Graph Capture
+            </a>
+            <button id="importCapturedGraphBtn" type="button">Import from return_graph_id</button>
+          </div>
+          <div id="graphCaptureStatus" class="hint small section-hint"></div>
+          <div id="graphCapturePreviewWrap" class="graph-capture-preview hidden">
+            <img id="graphCapturePreview" alt="Imported graph preview" />
+          </div>
         </div>
       </div>
 
