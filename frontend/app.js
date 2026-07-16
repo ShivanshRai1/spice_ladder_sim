@@ -128,6 +128,39 @@ function getImportGraphIdCandidate() {
   }
 }
 
+function getImportQueryExtras() {
+  const params = new URLSearchParams(window.location.search);
+  const extras = new URLSearchParams();
+  const branches =
+    params.get("return_NoOfbranches") ||
+    params.get("return_noofbranches") ||
+    params.get("branches") ||
+    params.get("NoOfbranches") ||
+    "";
+  const timestep =
+    params.get("return_timeStep") ||
+    params.get("return_timestep") ||
+    params.get("timeStep") ||
+    params.get("timestep") ||
+    "";
+  const branchesText = String(branches).trim();
+  const timestepText = String(timestep).trim();
+  if (branchesText && /^\d+(\.\d+)?$/.test(branchesText)) {
+    extras.set("branches", String(Math.round(Number(branchesText))));
+  }
+  if (timestepText && Number.isFinite(Number(timestepText)) && Number(timestepText) > 0) {
+    extras.set("timestep", timestepText);
+  }
+  return extras;
+}
+
+function buildImportCapturedGraphUrl(graphId) {
+  const extras = getImportQueryExtras();
+  const query = new URLSearchParams({ graph_id: String(graphId) });
+  extras.forEach((value, key) => query.set(key, value));
+  return `${IMPORT_GRAPH_API_URL}?${query.toString()}`;
+}
+
 function buildCleanReturnUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete("return_graph_id");
@@ -250,7 +283,7 @@ async function importCapturedGraph({ auto = false } = {}) {
   if (!auto) setError("");
 
   try {
-    const res = await fetch(`${IMPORT_GRAPH_API_URL}?graph_id=${encodeURIComponent(graphId)}`);
+    const res = await fetch(buildImportCapturedGraphUrl(graphId));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(body.error || `Import failed (${res.status})`);
@@ -280,6 +313,13 @@ async function importCapturedGraph({ auto = false } = {}) {
     setGraphCaptureStatus(
       `Imported graph_id=${body.graph_id || graphId} (N=${body.N}). ${imageNote}${fitNote}`
     );
+    if (auto) {
+      setError("");
+      setValidation(
+        `Imported graph ${body.graph_id || graphId}: ${body.N} RC branches from captured curve.`,
+        true
+      );
+    }
 
     // Drop return_graph_id after a successful import so refresh does not surprise-overwrite edits.
     try {
@@ -295,7 +335,7 @@ async function importCapturedGraph({ auto = false } = {}) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     setGraphCaptureStatus(message, true);
-    if (!auto) setError(message);
+    setError(message);
   } finally {
     if (el.importCapturedGraphBtn) el.importCapturedGraphBtn.disabled = false;
   }

@@ -379,22 +379,29 @@ def _build_graph_image_candidates(graph_img: Any) -> list[str]:
     return unique
 
 
-def _fit_foster_from_zth(
-    t_raw: list[float], z_raw: list[float], n: int
-) -> tuple[list[float], list[float], list[float]]:
-    """Fit Foster R/C from Zth(t) ≈ sum Ri*(1-exp(-t/tau_i)), Ci=tau_i/Ri."""
-    if n < 1:
-        raise ValueError("Branch count N must be >= 1.")
-
+def _preprocess_foster_samples(
+    t_raw: list[float], z_raw: list[float]
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Keep t>0 finite samples; shift negative Zth so digitization offset does not drop points."""
     t = np.asarray(t_raw, dtype=float)
     z = np.asarray(z_raw, dtype=float)
-    mask = np.isfinite(t) & np.isfinite(z) & (t > 0.0) & (z >= 0.0)
+    meta: dict[str, Any] = {"negative_y_shift": 0.0, "dropped_nonpositive_time": 0}
+
+    total = int(t.size)
+    mask = np.isfinite(t) & np.isfinite(z) & (t > 0.0)
+    meta["dropped_nonpositive_time"] = int(total - int(np.count_nonzero(mask)))
     t = t[mask]
     z = z[mask]
-    if t.size < max(3, n):
+    if t.size < 3:
         raise ValueError(
-            f"Need at least {max(3, n)} valid curve points to fit N={n}."
+            "Need at least 3 valid points with time > 0 to import a thermal curve."
         )
+
+    z_min = float(np.min(z))
+    if z_min < 0:
+        meta["negative_y_shift"] = z_min
+        z = z - z_min
+    z = np.maximum(z, 0.0)
 
     order = np.argsort(t)
     t = t[order]
@@ -410,8 +417,24 @@ def _fit_foster_from_zth(
             uniq_z.append(zi)
     t = np.asarray(uniq_t, dtype=float)
     z = np.asarray(uniq_z, dtype=float)
-    if t.size < max(3, n):
+    if t.size < 3:
         raise ValueError("Not enough unique time points for Foster fit.")
+    return t, z, meta
+
+
+def _fit_foster_from_zth(
+    t_raw: list[float], z_raw: list[float], n: int
+) -> tuple[list[float], list[float], list[float], dict[str, Any]]:
+    """Fit Foster R/C from Zth(t) ≈ sum Ri*(1-exp(-t/tau_i)), Ci=tau_i/Ri."""
+    if n < 1:
+        raise ValueError("Branch count N must be >= 1.")
+
+    t, z, preprocess_meta = _preprocess_foster_samples(t_raw, z_raw)
+    if t.size < max(3, n):
+        raise ValueError(
+            f"Need at least {max(3, n)} valid curve points to fit N={n} "
+            f"(have {int(t.size)} after preprocessing)."
+        )
 
     # Digitized Zth curves can be non-monotone; enforce physical non-decrease.
     z = np.maximum.accumulate(np.maximum(z, 0.0))
@@ -455,7 +478,57 @@ def _fit_foster_from_zth(
         r[sort_idx].tolist(),
         c[sort_idx].tolist(),
         taus[sort_idx].tolist(),
+        preprocess_meta,
     )
+
+
+def _resolve_requested_branch_count(
+    detail: dict[str, Any], request_args: Any, point_count: int
+) -> int:
+    """Branches from query (?branches / ?return_NoOfbranches) or DiscoverEE detail fields."""
+    candidates = [
+        request_args.get("branches"),
+        request_args.get("return_NoOfbranches"),
+        request_args.get("return_noofbranches"),
+        request_args.get("NoOfbranches"),
+        detail.get("df_noofbranches"),
+        detail.get("df_NoOfbranches"),
+    ]
+    requested = 4
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            requested = int(float(text))
+            break
+        except (TypeError, ValueError):
+            continue
+    requested = max(1, min(requested, 50))
+    # Cannot fit more branches than unique time samples.
+    return max(1, min(requested, max(1, point_count)))
+
+
+def _resolve_requested_timestep(detail: dict[str, Any], request_args: Any) -> float | None:
+    candidates = [
+        request_args.get("timestep"),
+        request_args.get("return_timeStep"),
+        request_args.get("return_timestep"),
+        request_args.get("timeStep"),
+        detail.get("df_timestep"),
+        detail.get("df_timeStep"),
+    ]
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            value = float(text)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value) and value > 0:
+            return value
+    return None
 
 
 def _fetch_discoveree_graph(graph_id: str) -> dict[str, Any]:
@@ -516,12 +589,19 @@ def import_captured_graph():
 
         # Prefer R_th_C_th / rth_cth curves when present.
         preferred = None
-        for detail in details:
-            if not isinstance(detail, dict):
+        for detail_item in details:
+            if not isinstance(detail_item, dict):
                 continue
-            title = str(detail.get("curve_title") or "").strip().lower()
-            if "rth" in title or "r_th" in title or "cth" in title or "c_th" in title:
-                preferred = detail
+            title = str(detail_item.get("curve_title") or "").strip().lower()
+            if (
+                "r_th_c_th" in title
+                or "rth_cth" in title
+                or "rth" in title
+                or "r_th" in title
+                or "cth" in title
+                or "c_th" in title
+            ):
+                preferred = detail_item
                 break
         detail = preferred or next(
             (d for d in details if isinstance(d, dict)),
@@ -537,24 +617,11 @@ def import_captured_graph():
                 400,
             )
 
-        branch_raw = detail.get("df_noofbranches")
-        try:
-            n = int(float(branch_raw)) if branch_raw not in (None, "") else 4
-        except (TypeError, ValueError):
-            n = 4
-        n = max(1, min(n, 50))
-
-        dt_raw = detail.get("df_timestep")
-        try:
-            timestep = float(dt_raw) if dt_raw not in (None, "") else None
-        except (TypeError, ValueError):
-            timestep = None
-        if timestep is not None and not (np.isfinite(timestep) and timestep > 0):
-            timestep = None
-
         t_vals = [p["x"] for p in points]
         z_vals = [p["y"] for p in points]
-        rth, cth, taus = _fit_foster_from_zth(t_vals, z_vals, n)
+        n = _resolve_requested_branch_count(detail, request.args, len(points))
+        timestep = _resolve_requested_timestep(detail, request.args)
+        rth, cth, taus, preprocess_meta = _fit_foster_from_zth(t_vals, z_vals, n)
 
         # Report simple fit residual for transparency (does not block import).
         t_arr = np.asarray(t_vals, dtype=float)
@@ -585,6 +652,7 @@ def import_captured_graph():
                 "tau": taus,
                 "timestep": timestep,
                 "fit_residual_rms": residual_rms,
+                "preprocess": preprocess_meta,
                 "notes": [
                     "graph_img is treated as a filename/URL candidate list, never as raw base64.",
                     "Rth/Cth come from a Foster multi-exponential fit of the captured Zth(t) curve.",

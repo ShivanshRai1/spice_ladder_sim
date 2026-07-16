@@ -76,11 +76,10 @@ Default values are preloaded:
 
 Click **Run Simulation**.
 
-## Notes
+## DigitalOcean + Render
 
-- Keep backend running while using the frontend.
-- Frontend calls backend at `http://127.0.0.1:5000/api/simulate`.
-- If browser blocks local file access, use the static server option (`python3 -m http.server` on macOS, `py -m http.server` on Windows).
-- The API returns:
-  - Foster: `Tj` array
-  - Cauer: `T_nodes` in **node-major** format (`T_nodes[i]` is node `i` over time)
+- **Primary (DO):** `http://165.22.212.92:8020/`
+- **Backup (Render):** `https://spice-ladder-sim.onrender.com/`
+
+Graph Capture returns to DO when available; if DO is down it keeps/uses the Render host.
+Open Graph Capture with a `return_url` pointing at either host — DiscoverEE can keep using whichever link you give them.
